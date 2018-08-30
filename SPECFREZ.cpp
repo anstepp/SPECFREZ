@@ -10,6 +10,7 @@ aaron stepp
 #include "SPECFREZ.h"
 #include <rt.h>
 #include <rtdefs.h>
+#include <math.h>
 
 SPECFREZ::SPECFREZ()
 {
@@ -86,6 +87,12 @@ int SPECFREZ::configure()
 
 	_outbuf = new float [outframes];
 
+	_lastfftbuf = new float [_full_fft];
+	for (int i = 0; i < _full_fft - 1; i++){
+		_lastfftbuf[i] = 0.0f;
+	}
+
+
 	return 0;
 
 }
@@ -115,48 +122,52 @@ void SPECFREZ::Bucket_Wrapper(const float buf[], const int len, void *obj)
 void SPECFREZ::mangle_samps(const float *buf, const int len)
 {
 
-	float _lastfftbuf[_full_fft];
-
 	for(int i = 0; i < _half_fft; i++){
-		_lastfftbuf[i] = fftbuf[i] = buf[i] * window->next(i) * _inamp;
+		fftbuf[i] = buf[i] * window->next(i) * _inamp;
 		printf("%f windowed\n", fftbuf[i]);
 	}
 	for(int i = _half_fft; i < _full_fft; i++){
-		_lastfftbuf[i] = fftbuf[i] = 0.0f;
+		fftbuf[i] = 0.0f;
 	}
 
 	TheFFT->r2c();
 
-	for(int i = 0; i < _full_fft; i++)
-	{
+	fftbuf[0] = 0.0;
+	fftbuf[1] = 0.0;
 
-		if (i % 2 == 0)
-		{
-			if(fftbuf[i] < _lastfftbuf[i]){
-				_lastfftbuf[i] = _lastfftbuf[i] * _decay;
-				fftbuf[i] = _lastfftbuf[i];
-				FFT_increment();
-				//printf("%f sustain\n", fftbuf[i]);
-			}
-			else{
-				fftbuf[i] = fftbuf[i] * _decay;
-				_lastfftbuf[i] = fftbuf[i];
-				FFT_increment();
-				//printf("%f decay\n", fftbuf[i]);
-			}
+	int i = 2; 
+	int j = 3;
+
+	for(i, j; i < _full_fft; i++, j++){
+		float r_sq = fftbuf[i] * fftbuf[i];
+		float i_sq = fftbuf[j] * fftbuf[j];
+		float fft_amp = sqrt(r_sq + i_sq);
+		float last_r_sq = _lastfftbuf[i] * _lastfftbuf[i];
+		float last_i_sq = _lastfftbuf[j] * _lastfftbuf[j];
+		float last_fft_amp = sqrt(last_r_sq + last_i_sq);
+		if(fft_amp > last_fft_amp){
+			fft_amp *= _decay;
+			float phase = float(rand())/ float(RAND_MAX);
+			fftbuf[i] = fft_amp * cos(phase);
+			fftbuf[j] = fft_amp * sin(phase);
+			_lastfftbuf[i] = fftbuf[i];
+			_lastfftbuf[j] = fftbuf[j];
 		}
-		else
-		{
-			fftbuf[i] = (float) rand()/RAND_MAX;
-			//printf("%f phase\n", fftbuf[i]);
+		else{
+			fft_amp = last_fft_amp * _decay;
+			float phase = float(rand())/ float(RAND_MAX);
+			fftbuf[i] = fft_amp * cos(phase);
+			fftbuf[j] = fft_amp * sin(phase);
+			_lastfftbuf[i] = fftbuf[i];
+			_lastfftbuf[j] = fftbuf[j];
 		}
 	}
 
-
 	TheFFT->c2r();
 
-	for(int i = 0; i < _half_fft; i++){
-		_outbuf[i] = _outbuf[i] + fftbuf[i];
+	for(int i = 0, j = len; i < len; i++, j++){
+		_outbuf[fft_index] += fftbuf[i];
+		FFT_increment();
 	}
 }
 
@@ -190,7 +201,8 @@ int SPECFREZ::run()
 
 	for(int i = 0; i < nframes; i++)
 	{
-		out[0] = fftbuf[out_index] * _amp;
+		out[0] = _outbuf[out_index] * _amp;
+		printf("%f out\n", out[0]);
 		rtaddout(out);
 		Sample_increment();
 		increment();
