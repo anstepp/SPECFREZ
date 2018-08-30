@@ -21,8 +21,8 @@ private:
 
 	float *_in, *_outbuf, wintab, *_lastfftbuf;
 	int _nargs, _inchan, _branch, outframes, fft_index, out_index, inframes;
-	float _amp, _pan;
-	float decay;
+	float _amp, _pan, _inamp;
+	float _decay;
 
 	Offt *TheFFT;
 	float *fftbuf;
@@ -31,4 +31,3 @@ private:
 	Ooscili *window;
 
 };
-

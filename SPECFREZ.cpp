@@ -12,12 +12,18 @@ aaron stepp
 #include <rtdefs.h>
 
 SPECFREZ::SPECFREZ()
-	: _in(NULL),
-	_branch(0), 
-	_outbuf(NULL), 
-	window(NULL), 
-	TheBucket(NULL)
 {
+	float *_in = NULL;
+	float *_outbuf = NULL; 
+	float *window = NULL;
+	Obucket *TheBucket = NULL;
+	int _full_fft = 0;
+	int _half_fft = 0;
+	Offt *TheFFT = NULL;
+	float _amp = 0;
+	float _decay = 0;
+	int _inchan = 0;
+	int _inamp = 0;
 }
 
 SPECFREZ::~SPECFREZ()
@@ -26,8 +32,7 @@ SPECFREZ::~SPECFREZ()
 	delete [] _outbuf;
 	delete window;
 	delete TheBucket;
-	delete [] _outbuf;
-	delete fftbuf;
+	delete TheFFT;
 }
 
 int SPECFREZ::init(double p[], int n_args)
@@ -37,17 +42,19 @@ int SPECFREZ::init(double p[], int n_args)
 	const float outskip = p[0];
 	const float inskip = p[1];
 	const float dur = p[2];
-	const float inchans = p[3];
-	const int _full_fft = p[4];
-	float decay = p[5];
-	const float _inchan = p[6];
+	_amp = p[3];
+	_inamp = p[4];
+	const float inchans = p[5];
+	_full_fft = p[6];
+	_decay = p[7];
+	_inchan = p[8];
 
 	int winlen;
-	double *wintab = (double *) getPFieldTable(7, &winlen);
+	double *wintab = (double *) getPFieldTable(9, &winlen);
 	const float freq = 1.0/(float)SR;
 	window = new Ooscili(SR, freq, wintab, winlen);
 
-	int _half_fft = _full_fft / 2;
+	_half_fft = _full_fft / 2;
 
 	inframes = int(dur * SR + 0.5);
 
@@ -60,26 +67,24 @@ int SPECFREZ::init(double p[], int n_args)
 int SPECFREZ::configure()
 {
 
-	_full_fft = 8;
-	_half_fft = _full_fft / 2;
-
 	_in = new float [RTBUFSAMPS * inputChannels()];
 	outframes = fmax(_full_fft, RTBUFSAMPS);
-
     if (_in == NULL)
         return -1;
 
 	TheFFT = new Offt(_full_fft);
 	fftbuf = TheFFT->getbuf();
+	if (TheFFT == NULL)
+		return -1;
 
-	TheBucket = new Obucket(_full_fft, Bucket_Wrapper, (void *) this);
+	TheBucket = new Obucket(_half_fft, Bucket_Wrapper, (void *) this);
 	if (TheBucket == NULL)
 		return -1;
 
 	fft_index = 0;
 	out_index = 0;
 
-	float _outbuf[outframes];
+	_outbuf = new float [outframes];
 
 	return 0;
 
@@ -87,7 +92,7 @@ int SPECFREZ::configure()
 
 void SPECFREZ::FFT_increment()
 {
-	printf("%i\n", fft_index);
+
 	if (++fft_index == outframes){
 		fft_index = 0;
 	}
@@ -95,7 +100,7 @@ void SPECFREZ::FFT_increment()
 
 void SPECFREZ::Sample_increment()
 {
-	printf("%i\n", out_index);
+
 	if (++out_index == outframes){
 		out_index = 0;
 	}
@@ -109,24 +114,18 @@ void SPECFREZ::Bucket_Wrapper(const float buf[], const int len, void *obj)
 
 void SPECFREZ::mangle_samps(const float *buf, const int len)
 {
-    float _lastfftbuf[_full_fft];
-    for(int i = 0; i < _full_fft - 1; i++){
-    	_lastfftbuf[i] = 0.0f;
-    }
 
-	TheFFT->r2c();
+	float _lastfftbuf[_full_fft];
 
 	for(int i = 0; i < _half_fft; i++){
-		fftbuf[i] = buf[i]; //* window->next(i);
-		printf("%f\n", fftbuf[i]);
+		_lastfftbuf[i] = fftbuf[i] = buf[i] * window->next(i) * _inamp;
+		printf("%f windowed\n", fftbuf[i]);
 	}
 	for(int i = _half_fft; i < _full_fft; i++){
 		_lastfftbuf[i] = fftbuf[i] = 0.0f;
 	}
 
-	for(int i = 0; i < _full_fft; i++){
-		printf("%f\n", fftbuf[i]);
-	}
+	TheFFT->r2c();
 
 	for(int i = 0; i < _full_fft; i++)
 	{
@@ -134,39 +133,31 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 		if (i % 2 == 0)
 		{
 			if(fftbuf[i] < _lastfftbuf[i]){
-				_lastfftbuf[i] = _lastfftbuf[i] * decay;
+				_lastfftbuf[i] = _lastfftbuf[i] * _decay;
 				fftbuf[i] = _lastfftbuf[i];
 				FFT_increment();
-				printf("%s\n", "sustain");
-				printf("%f\n", fftbuf[i]);
+				//printf("%f sustain\n", fftbuf[i]);
 			}
 			else{
-				fftbuf[i] = fftbuf[i] * decay;
+				fftbuf[i] = fftbuf[i] * _decay;
 				_lastfftbuf[i] = fftbuf[i];
 				FFT_increment();
-				printf("%s\n", "decay");
-				printf("%f\n", fftbuf[i]);
+				//printf("%f decay\n", fftbuf[i]);
 			}
 		}
 		else
 		{
-			//playfft[i] = (float) rand()/RAND_MAX;
-			fftbuf[i] = 0.0f;
-			printf("%s\n", "phase");
-			printf("%f\n", fftbuf[i]);
+			fftbuf[i] = (float) rand()/RAND_MAX;
+			//printf("%f phase\n", fftbuf[i]);
 		}
 	}
 
-	for (int i = 0; i < _half_fft; i++){
-		printf("%f\n", fftbuf[i]);
-	}
 
 	TheFFT->c2r();
 
-	for (int i = 0; i < len; i++){
-		_outbuf[out_index] = fftbuf[i];
+	for(int i = 0; i < _half_fft; i++){
+		_outbuf[i] = _outbuf[i] + fftbuf[i];
 	}
-
 }
 
 void SPECFREZ::doupdate()
@@ -176,7 +167,7 @@ void SPECFREZ::doupdate()
 
 int SPECFREZ::run()
 {
-	float out[1];
+	float out[0];
 
 	const int nframes = framesToRun();
 	const int inchans = inputChannels();
@@ -187,16 +178,19 @@ int SPECFREZ::run()
 
 	if (currentFrame() < inframes){
 		rtgetin(_in, this, samps);
-		for (int i = _inchan; i < nframes; i++){
-			float the_current_sample = _in[fft_index];
-			printf("%f\n", the_current_sample);
+		for (int i = 0; i < samps; i++){
+			//printf("%f in\n", _in[i]);
+		}
+		for (int i = _inchan; i < samps; i += inchans){
+			float the_current_sample = _in[i];
+			//printf("%f Current Sample\n", the_current_sample);
 			TheBucket->drop(the_current_sample);
 		}
 	}
 
 	for(int i = 0; i < nframes; i++)
 	{
-		out[0] = _outbuf[out_index];
+		out[0] = fftbuf[out_index] * _amp;
 		rtaddout(out);
 		Sample_increment();
 		increment();

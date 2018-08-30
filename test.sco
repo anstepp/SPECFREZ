@@ -9,10 +9,12 @@ window = maketable("window", 2000, 1)
 
 start = 0
 inskip = 0
-duration = 100
+duration = DUR()
+amp = .25
+inamp = 5
 inchans = 1
-fft = 256
+fft = 1024
 decay = .9
 inchan = 0
 
-SPECFREZ(start, inskip, duration, inchans, fft, decay, inchan, window)
+SPECFREZ(start, inskip, duration, amp, inamp, inchans, fft, decay, inchan, window)
