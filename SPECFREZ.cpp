@@ -25,6 +25,9 @@ SPECFREZ::SPECFREZ()
 	float _decay = 0;
 	int _inchan = 0;
 	int _inamp = 0;
+	float *_ola = NULL;
+	int out_index = 0;
+	int fft_index = 0;
 }
 
 SPECFREZ::~SPECFREZ()
@@ -34,6 +37,7 @@ SPECFREZ::~SPECFREZ()
 	delete window;
 	delete TheBucket;
 	delete TheFFT;
+	delete [] _ola;
 }
 
 int SPECFREZ::init(double p[], int n_args)
@@ -57,7 +61,7 @@ int SPECFREZ::init(double p[], int n_args)
 
 	_half_fft = _full_fft / 2;
 
-	inframes = int(dur * SR + 0.5);
+	inframes = int(dur * SR);
 
 	rtsetoutput(outskip, dur, this);
 	rtsetinput(inskip, this);
@@ -78,20 +82,17 @@ int SPECFREZ::configure()
 	if (TheFFT == NULL)
 		return -1;
 
-	TheBucket = new Obucket(_half_fft, Bucket_Wrapper, (void *) this);
+	TheBucket = new Obucket(_full_fft, Bucket_Wrapper, (void *) this);
 	if (TheBucket == NULL)
 		return -1;
 
-	fft_index = 0;
-	out_index = 0;
-
+	_ola = new float [_full_fft];
 	_outbuf = new float [outframes];
 
 	_lastfftbuf = new float [_full_fft];
-	for (int i = 0; i < _full_fft - 1; i++){
+	for (int i = 0; i < _full_fft; i++){
 		_lastfftbuf[i] = 0.0f;
 	}
-
 
 	return 0;
 
@@ -122,52 +123,76 @@ void SPECFREZ::Bucket_Wrapper(const float buf[], const int len, void *obj)
 void SPECFREZ::mangle_samps(const float *buf, const int len)
 {
 
-	for(int i = 0; i < _half_fft; i++){
-		fftbuf[i] = buf[i] * window->next(i) * _inamp;
-		printf("%f windowed\n", fftbuf[i]);
+	//windowing using a window decided user
+
+	for(int i = 0; i < len; i++){
+		float window_var = window->next(i);
+		//printf("%f\n", window_var);
+		fftbuf[i] = buf[i] *_inamp;
 	}
-	for(int i = _half_fft; i < _full_fft; i++){
+
+	// zero-padding
+
+	for(int i = len; i < _full_fft; i++){
 		fftbuf[i] = 0.0f;
 	}
 
 	TheFFT->r2c();
 
-	fftbuf[0] = 0.0;
-	fftbuf[1] = 0.0;
+	fftbuf[0] = 0.0; //dc has no imaginary value
+	fftbuf[1] = 0.0; //nyquist has no imaginary value
 
-	int i = 2; 
-	int j = 3;
 
-	for(i, j; i < _full_fft; i++, j++){
+	//compute the polar coordinates for each bin
+	//evaulate if the bin amplitude is greater than the previous fft
+	//if so, keep as current bin, add decay
+	//if not, change to last bin value, add decay
+	//randomize phase (0-360)
+	//convert back to Cartesian
+	//set _lastfftbuf values to compare next fft to
+
+	for(int i = 2, j = 3; i < _half_fft; i += 2, j += 2){
+        printf("%f, %f\n", fftbuf[i], fftbuf[j]);
 		float r_sq = fftbuf[i] * fftbuf[i];
 		float i_sq = fftbuf[j] * fftbuf[j];
-		float fft_amp = sqrt(r_sq + i_sq);
+		float fft_mag = sqrt(r_sq + i_sq);
+		float fft_phi = atan2(fftbuf[j], fftbuf[i]);
 		float last_r_sq = _lastfftbuf[i] * _lastfftbuf[i];
 		float last_i_sq = _lastfftbuf[j] * _lastfftbuf[j];
-		float last_fft_amp = sqrt(last_r_sq + last_i_sq);
-		if(fft_amp > last_fft_amp){
-			fft_amp *= _decay;
-			float phase = float(rand())/ float(RAND_MAX);
-			fftbuf[i] = fft_amp * cos(phase);
-			fftbuf[j] = fft_amp * sin(phase);
+		float last_fft_mag = sqrt(last_r_sq + last_i_sq);
+		float last_fft_phi = atan2(_lastfftbuf[j], _lastfftbuf[i]);
+		if(fft_mag > last_fft_mag){
+			fft_mag *= _decay;
+			float phase = rand() % 360;
+			fftbuf[i] = fft_mag * cos(phase);
+			fftbuf[j] = fft_mag * sin(phase);
+            printf("decay %f, %f\n", fftbuf[i], fftbuf[j]);
 			_lastfftbuf[i] = fftbuf[i];
 			_lastfftbuf[j] = fftbuf[j];
 		}
 		else{
-			fft_amp = last_fft_amp * _decay;
-			float phase = float(rand())/ float(RAND_MAX);
-			fftbuf[i] = fft_amp * cos(phase);
-			fftbuf[j] = fft_amp * sin(phase);
+			fft_mag = last_fft_mag * _decay;
+			float phase = rand() % 360;
+			fftbuf[i] = fft_mag * cos(phase);
+			fftbuf[j] = fft_mag * sin(phase);
+            printf("sustain %f, %f\n", fftbuf[i], fftbuf[j]);
 			_lastfftbuf[i] = fftbuf[i];
 			_lastfftbuf[j] = fftbuf[j];
 		}
 	}
 
+
+
+
 	TheFFT->c2r();
 
+	//overlap add
+
 	for(int i = 0, j = len; i < len; i++, j++){
-		_outbuf[fft_index] += fftbuf[i];
+		_ola[i] += fftbuf[i];
+		_outbuf[fft_index] = _ola[i];
 		FFT_increment();
+		_ola[i] = fftbuf[j];
 	}
 }
 
@@ -190,11 +215,9 @@ int SPECFREZ::run()
 	if (currentFrame() < inframes){
 		rtgetin(_in, this, samps);
 		for (int i = 0; i < samps; i++){
-			//printf("%f in\n", _in[i]);
 		}
 		for (int i = _inchan; i < samps; i += inchans){
 			float the_current_sample = _in[i];
-			//printf("%f Current Sample\n", the_current_sample);
 			TheBucket->drop(the_current_sample);
 		}
 	}
@@ -202,7 +225,7 @@ int SPECFREZ::run()
 	for(int i = 0; i < nframes; i++)
 	{
 		out[0] = _outbuf[out_index] * _amp;
-		printf("%f out\n", out[0]);
+		out[1] = 0.0f;
 		rtaddout(out);
 		Sample_increment();
 		increment();
