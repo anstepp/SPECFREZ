@@ -29,5 +29,6 @@ private:
 
 	Obucket *TheBucket;
 	Ooscili *window;
+	Ooscili *decaytable;
 
 };

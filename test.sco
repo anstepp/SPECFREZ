@@ -3,21 +3,20 @@ load("./libSPECFREZ.so")
 
 set_option("clobber = on")
 
-rtinput("../../../snd/huhh.wav")
+rtinput("../../../snd/nucular.wav")
 rtoutput("specfrez.wav")
 
 bus_config("in 0-1", "out 0-1")
 
-window = maketable("window", 2000, 1)
-
 start = 0
 inskip = 0
-duration = DUR() * 10
+duration = DUR()
 amp = 1
-inamp = .5
 inchans = 1
-fft = 2048
-decay = .9
+fft = 4096
+decay = maketable("curve", 1000, 0,.8,2, 1000,.5)
 inchan = 0
 
-SPECFREZ(start, inskip, duration, amp, inamp, inchans, fft, decay, inchan, window)
+window = maketable("window", fft, 1)
+
+SPECFREZ(start, inskip, duration, amp, inchans, fft, decay, inchan, window, 0.5)

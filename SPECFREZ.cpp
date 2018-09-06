@@ -3,6 +3,7 @@
 aaron stepp
 
 */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <ugens.h>
@@ -12,29 +13,23 @@ aaron stepp
 #include <rtdefs.h>
 #include <math.h>
 
+float TWO_PI = M_PI * 2;
+
 SPECFREZ::SPECFREZ()
 {
 	float *_in = NULL;
 	float *_outbuf = NULL; 
 	float *window = NULL;
 	Obucket *TheBucket = NULL;
-	int _full_fft = 0;
-	int _half_fft = 0;
 	Offt *TheFFT = NULL;
-	float _amp = 0;
-	float _decay = 0;
-	int _inchan = 0;
-	int _inamp = 0;
 	float *_ola = NULL;
-	int out_index = 0;
-	int fft_index = 0;
 }
 
 SPECFREZ::~SPECFREZ()
 {
 	delete [] _in;
 	delete [] _outbuf;
-	delete window;
+	delete [] window;
 	delete TheBucket;
 	delete TheFFT;
 	delete [] _ola;
@@ -48,20 +43,26 @@ int SPECFREZ::init(double p[], int n_args)
 	const float inskip = p[1];
 	const float dur = p[2];
 	_amp = p[3];
-	_inamp = p[4];
-	const float inchans = p[5];
-	_full_fft = p[6];
-	_decay = p[7];
-	_inchan = p[8];
+	const float inchans = p[4];
+	_full_fft = p[5];
+    _half_fft = _full_fft / 2;
+	//_decay = p[7];
+	_inchan = p[7];
 
 	int winlen;
-	double *wintab = (double *) getPFieldTable(9, &winlen);
-	const float freq = 1.0/(float)SR;
+	double *wintab = (double *) getPFieldTable(8, &winlen);
+	const float freq = 1.0/(float)_half_fft;
 	window = new Ooscili(SR, freq, wintab, winlen);
-
-	_half_fft = _full_fft / 2;
+    printf("%i %f\n", window->getlength(), freq);
 
 	inframes = int(dur * SR);
+
+    int feedbackwinlen;
+    double *feedbacktab = (double *) getPFieldTable(6, &feedbackwinlen);
+    const float feedbackfreq = 1.0/_half_fft;
+    decaytable = new Ooscili(SR, freq, feedbacktab, feedbackwinlen);
+
+    _pan = p[9];
 
 	rtsetoutput(outskip, dur, this);
 	rtsetinput(inskip, this);
@@ -82,7 +83,7 @@ int SPECFREZ::configure()
 	if (TheFFT == NULL)
 		return -1;
 
-	TheBucket = new Obucket(_full_fft, Bucket_Wrapper, (void *) this);
+	TheBucket = new Obucket(_half_fft, Bucket_Wrapper, (void *) this);
 	if (TheBucket == NULL)
 		return -1;
 
@@ -122,14 +123,13 @@ void SPECFREZ::Bucket_Wrapper(const float buf[], const int len, void *obj)
 
 void SPECFREZ::mangle_samps(const float *buf, const int len)
 {
+	
+    // window
 
-	//windowing using a window decided user
-
-	for(int i = 0; i < len; i++){
-		float window_var = window->next(i);
-		//printf("%f\n", window_var);
-		fftbuf[i] = buf[i] *_inamp;
-	}
+    for(int i = 0; i < len; i++){
+        float window_val = 0.5 * (1 - (cos((2*M_PI*i)/(len - 1))));
+        fftbuf[i] = buf[i] * window_val;
+    }
 
 	// zero-padding
 
@@ -152,7 +152,8 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 	//set _lastfftbuf values to compare next fft to
 
 	for(int i = 2, j = 3; i < _half_fft; i += 2, j += 2){
-        printf("%f, %f\n", fftbuf[i], fftbuf[j]);
+        _decay = decaytable->next(i/2);
+        //printf("%f, %f\n", fftbuf[i], fftbuf[j]);
 		float r_sq = fftbuf[i] * fftbuf[i];
 		float i_sq = fftbuf[j] * fftbuf[j];
 		float fft_mag = sqrt(r_sq + i_sq);
@@ -163,26 +164,27 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 		float last_fft_phi = atan2(_lastfftbuf[j], _lastfftbuf[i]);
 		if(fft_mag > last_fft_mag){
 			fft_mag *= _decay;
-			float phase = rand() % 360;
+			float phase = ((float)rand()/(float)RAND_MAX) * TWO_PI;
+            //phase = fft_phi;
+            //printf("%f\n", phase);
 			fftbuf[i] = fft_mag * cos(phase);
 			fftbuf[j] = fft_mag * sin(phase);
-            printf("decay %f, %f\n", fftbuf[i], fftbuf[j]);
+            //printf("decay %f, %f\n", fftbuf[i], fftbuf[j]);
 			_lastfftbuf[i] = fftbuf[i];
 			_lastfftbuf[j] = fftbuf[j];
 		}
 		else{
 			fft_mag = last_fft_mag * _decay;
-			float phase = rand() % 360;
+			float phase = ((float)rand()/(float)RAND_MAX) * TWO_PI;
+            //phase = last_fft_phi;
+            //printf("%f\n", phase);
 			fftbuf[i] = fft_mag * cos(phase);
 			fftbuf[j] = fft_mag * sin(phase);
-            printf("sustain %f, %f\n", fftbuf[i], fftbuf[j]);
+            //printf("sustain %f, %f\n", fftbuf[i], fftbuf[j]);
 			_lastfftbuf[i] = fftbuf[i];
 			_lastfftbuf[j] = fftbuf[j];
 		}
 	}
-
-
-
 
 	TheFFT->c2r();
 
@@ -203,7 +205,7 @@ void SPECFREZ::doupdate()
 
 int SPECFREZ::run()
 {
-	float out[0];
+	float out[2];
 
 	const int nframes = framesToRun();
 	const int inchans = inputChannels();
@@ -224,8 +226,8 @@ int SPECFREZ::run()
 
 	for(int i = 0; i < nframes; i++)
 	{
-		out[0] = _outbuf[out_index] * _amp;
-		out[1] = 0.0f;
+		out[0] = _outbuf[out_index] * _amp * _pan;
+		out[1] = _outbuf[out_index] * _amp * (1.0 - _pan);
 		rtaddout(out);
 		Sample_increment();
 		increment();
