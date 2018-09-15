@@ -19,7 +19,7 @@ private:
 
 	int _full_fft, _half_fft;
 
-	float *_in, *_outbuf, wintab, *_lastfftbuf, *_ola;
+	float *_in, *_outbuf, wintab, *_lastfftbuf, *_ola, *_drybuf;
 	int _nargs, _inchan, _branch, outframes, fft_index, out_index, inframes;
 	float _amp, _pan, _inamp;
 	float _decay;

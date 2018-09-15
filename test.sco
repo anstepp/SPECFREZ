@@ -3,18 +3,20 @@ load("./libSPECFREZ.so")
 
 set_option("clobber = on")
 
-rtinput("../../../snd/nucular.wav")
+rtinput("lowsine.wav")
 rtoutput("specfrez.wav")
 
 bus_config("in 0-1", "out 0-1")
 
 start = 0
 inskip = 0
-duration = DUR()
+duration = 4
 amp = 1
 inchans = 1
 fft = 4096
-decay = maketable("curve", 1000, 0,.8,2, 1000,.5)
+decay = maketable("random", "nonorm", 1000, 'high', .8, .99)
+
+//decay = maketable("line", "nonorm", 1000, 0,.9, 1000,0) 
 inchan = 0
 
 window = maketable("window", fft, 1)
