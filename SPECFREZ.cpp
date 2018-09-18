@@ -81,9 +81,7 @@ int SPECFREZ::configure()
 	_in = new float [RTBUFSAMPS * inputChannels()];
 	outframes = imax(_full_fft, RTBUFSAMPS) * 2;
 
-    //printf("outframes is: %i\n", outframes);
-
-    fft_index = _full_fft;
+    fft_index = outframes - _half_fft;
     out_index = 0;
 
     if (_in == NULL)
@@ -99,7 +97,7 @@ int SPECFREZ::configure()
 	if (TheFFT == NULL)
 		return -1;
 
-	TheBucket = new Obucket(_full_fft, Bucket_Wrapper, (void *) this);
+	TheBucket = new Obucket(_half_fft, Bucket_Wrapper, (void *) this);
 	if (TheBucket == NULL)
 		return -1;
 
@@ -110,7 +108,7 @@ int SPECFREZ::configure()
 
      _drybuf = new float [outframes];
     for(int i = 0; i < outframes; i++){
-        _outbuf[i] = 0.0f;
+        _drybuf[i] = 0.0f;
     }
 
 	_lastfftbuf = new float [_full_fft];
@@ -148,7 +146,7 @@ void SPECFREZ::Bucket_Wrapper(const float buf[], const int len, void *obj)
 
 void SPECFREZ::mangle_samps(const float *buf, const int len)
 {
-    //printf("LEN: %i\n", len);
+    printf("LEN: %i, _full_fft: %i\n", len, _full_fft);
     // window
 
     for(int i = 0; i < len; i++){
@@ -156,7 +154,7 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
         fftbuf[i] = buf[i] * window_val;
     }
 
-    for (int i = len; i < _full_fft; i++){
+    for (int i = len; i < _full_fft * 2; i++){
         fftbuf[i] = 0.0f;
     }
 
@@ -206,6 +204,7 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 	TheFFT->c2r();
 
     for(int i = 0, j = len; i < len; i++, j++){
+        //printf("post-conversion:%f, %f, %i\n", fftbuf[i], fftbuf[j], i);
         _ola[i] += fftbuf[i];
         _outbuf[fft_index] = _ola[i];
         _drybuf[fft_index] = buf[i];
@@ -230,22 +229,17 @@ int SPECFREZ::run()
 
     rtgetin(_in, this, insamps);
 
-    //printf("SPECFREZ::run: %i %i %i\n", nframes, inchans, outchans);
-
 	for(int i = 0; i < nframes; i++)
 	{
 
         float insig;
         insig = _in[(i * inchans) + _inchan];
-        //printf("insig %i %f\n", i, insig);
 
         TheBucket->drop(insig);
  
         float out[2];
-        //printf("%i putbuf %f\n", i, _outbuf[out_index]);
 		out[0] = _outbuf[out_index] * _amp;
 		out[1] = _drybuf[out_index] * _amp;
-        //printf("out index %i dry signal %f\n", out_index, out[0]);
         Sample_increment();
 		rtaddout(out);
 		increment();
