@@ -15,11 +15,14 @@ private:
 	static void Bucket_Wrapper(const float buf[], const int fft_size, void *obj);
 	void FFT_increment();
 	void Sample_increment();
+	void window_input(const float buf[]);
+	void window_output();
 	void doupdate();
 
 	int _full_fft, _half_fft;
 
 	float *_in, *_outbuf, wintab, *_lastfftbuf, *_ola, *_drybuf;
+	float *inner_in, *inner_out, *_window;
 	int _nargs, _inchan, _branch, outframes, fft_index, out_index, inframes;
 	float _amp, _pan, _inamp;
 	float _decay;

@@ -3,8 +3,8 @@ load("./libSPECFREZ.so")
 
 set_option("clobber = on")
 
-rtinput("sine.wav")
-//rtinput("../../../snd/nucular.wav")
+//rtinput("sine.wav")
+rtinput("../../../snd/nucular.wav")
 rtoutput("specfrez.wav")
 
 bus_config("in 0-1", "out 0-1")

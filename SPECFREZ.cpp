@@ -116,6 +116,15 @@ int SPECFREZ::configure()
 		_lastfftbuf[i] = 0.0f;
 	}
 
+	inner_out = new float [_full_fft];
+	inner_in = new float [_full_fft];
+
+	// window using hann window
+	_window = new float [_full_fft];
+    for(int i = 0; i < _full_fft; i++){
+       	_window[i] = 0.5 * (1 - (cos((TWO_PI*i)/(_full_fft-1))));
+    }
+
 	return 0;
 
 }
@@ -144,19 +153,66 @@ void SPECFREZ::Bucket_Wrapper(const float buf[], const int len, void *obj)
 	myself->mangle_samps(buf, len);
 }
 
+void SPECFREZ::window_input(const float buf[])
+{
+	//rotate previous TheBucket samples to beginning of fft
+	for (int i = 0; i < _half_fft; i++){
+		inner_in[i] = inner_in[i + _half_fft];
+	}
+
+	//fill second half of buffer with current TheBucket samps
+	for (int i = _half_fft, j = 0; i < _full_fft; i++, j++){
+		inner_in[i] = buf[j];
+	}
+
+	//window before taking fft
+	int j = currentFrame() % _full_fft;
+	for (int i = 0; i < _full_fft; i++){
+		fftbuf[j] += _window[i] * inner_in[i];
+		if (++j == _full_fft){
+			j = 0;
+		}
+	}
+
+}
+
+void SPECFREZ::window_output()
+{
+
+	//get current location in fft with mod
+	//iterate through and add from location on in fftbuf to
+	//our internal buffer (inner_out)
+	int j = currentFrame() % _full_fft;
+	for(int i = 0; i < _full_fft; i++){
+		inner_out[i] += fftbuf[j];
+		if(++j == _full_fft){
+			j = 0;
+		}
+	}
+
+	//write to output buffer at current location in out_frames
+	//increment counter for location in out_frames
+	for(int i = 0; i < _half_fft; i++){
+		_outbuf[fft_index] = inner_out[i];
+		FFT_increment();
+	}
+
+	//rotate and zero out inner out buffer for overlap add
+	for(int i = 0; i < _half_fft; i++){
+		inner_out[i] = inner_out[i + _half_fft];
+	}
+	for(int i = 0; i < _full_fft; i++){
+		inner_out[i] = 0.0f;
+	}
+
+}
+
 void SPECFREZ::mangle_samps(const float *buf, const int len)
 {
     printf("LEN: %i, _full_fft: %i\n", len, _full_fft);
     // window
 
-    for(int i = 0; i < len; i++){
-        float window_val = 0.5 * (1 - (cos((TWO_PI*i)/(len))));
-        fftbuf[i] = buf[i] * window_val;
-    }
-
-    for (int i = len; i < _full_fft * 2; i++){
-        fftbuf[i] = 0.0f;
-    }
+    window_input(buf);
 
 	TheFFT->r2c();
 
@@ -203,14 +259,7 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 
 	TheFFT->c2r();
 
-    for(int i = 0, j = len; i < len; i++, j++){
-        //printf("post-conversion:%f, %f, %i\n", fftbuf[i], fftbuf[j], i);
-        _ola[i] += fftbuf[i];
-        _outbuf[fft_index] = _ola[i];
-        _drybuf[fft_index] = buf[i];
-        FFT_increment();
-        _ola[i] = fftbuf[j];
-    }
+    window_output();
 }
 
 void SPECFREZ::doupdate()
