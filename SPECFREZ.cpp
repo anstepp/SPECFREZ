@@ -51,11 +51,11 @@ int SPECFREZ::init(double p[], int n_args)
 	const float inchans = p[4];
 	_full_fft = p[5];
     _half_fft = _full_fft / 2;
-	//_decay = p[7];
-	_inchan = p[7];
+	_decay_mult = p[7];
+	_inchan = p[9];
 
 	int winlen;
-	double *wintab = (double *) getPFieldTable(8, &winlen);
+	double *wintab = (double *) getPFieldTable(9, &winlen);
 	const float freq = 1.0/(float)_half_fft;
 	window = new Ooscili(SR, freq, wintab, winlen);
     //printf("%i %f\n", window->getlength(), freq);
@@ -67,7 +67,7 @@ int SPECFREZ::init(double p[], int n_args)
     const float feedbackfreq = 1;
     decaytable = new Ooscili(_half_fft, feedbackfreq, feedbacktab, feedbackwinlen);
 
-    _pan = p[9];
+    _pan = p[10];
 
 	rtsetoutput(outskip, dur, this);
 	rtsetinput(inskip, this);
@@ -226,6 +226,8 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 
 	for(int i = 2, j = 3; i < _full_fft; i += 2, j += 2){
         _decay = decaytable->next(i/2);
+        float _decay_val = _decay * _decay_mult;
+        printf("%f decay val\n%f decay\n%f decay mult\n", _decay_val, _decay, _decay_mult);
         //printf("%i %f\n", i/2, _decay);
 		float r_sq = fftbuf[i] * fftbuf[i];
 		float i_sq = fftbuf[j] * fftbuf[j];
@@ -236,7 +238,7 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 		float last_fft_mag = sqrt(last_r_sq + last_i_sq);
         float last_fft_phi = atan2(_lastfftbuf[j], _lastfftbuf[i]);
 		if(fft_mag > last_fft_mag){
-			fft_mag *= _decay;
+			fft_mag *= _decay_val;
 			float phase = ((float)rand()/(float)RAND_MAX) * TWO_PI;
 			//float phase = fft_phi;
             fftbuf[i] = fft_mag * cos(phase);
@@ -245,7 +247,7 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 			_lastfftbuf[j] = fftbuf[j];
 		}
 		else{
-			fft_mag = last_fft_mag * _decay;
+			fft_mag = last_fft_mag * _decay_val;
 			float phase = ((float)rand()/(float)RAND_MAX) * TWO_PI;
 			//float phase = fft_phi;
             fftbuf[i] = fft_mag * cos(phase);
@@ -264,6 +266,13 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 
 void SPECFREZ::doupdate()
 {
+
+	double p[11];
+	update(p, 11, 1 << 3 | 1 << 7 | 1 << 10);
+	_amp = p[3];
+	_decay_mult = p[7];
+	_pan = p[10];
+
 }
 
 
@@ -281,6 +290,11 @@ int SPECFREZ::run()
 	for(int i = 0; i < nframes; i++)
 	{
 
+		if (--_branch <= 0) {
+			doupdate();
+			_branch = getSkip();
+		}
+
         float insig;
         insig = _in[(i * inchans) + _inchan];
 
@@ -288,7 +302,7 @@ int SPECFREZ::run()
  
         float out[2];
 		out[0] = _outbuf[out_index] * _amp;
-		out[1] = _drybuf[out_index] * _amp;
+		out[1] = _outbuf[out_index] * _amp;
         Sample_increment();
 		rtaddout(out);
 		increment();
