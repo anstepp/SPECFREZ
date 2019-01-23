@@ -1,6 +1,20 @@
 /* SPECFREZ
 
-aaron stepp
+A spectral freezing instrument.
+
+p0 = start
+p1 = inskip
+p2 = duration
+p3 = amplitude
+p4 = pre-fft amplitude
+p5 = inchans
+p6 = fft size
+p7 = delay table
+p8 = delay bin shift
+p9 = minimum bin magnitude
+p10 = window
+p11 = input channel
+p12 = pan 
 
 */
 
@@ -48,14 +62,17 @@ int SPECFREZ::init(double p[], int n_args)
 	const float inskip = p[1];
 	const float dur = p[2];
 	_amp = p[3];
-	const float inchans = p[4];
-	_full_fft = p[5];
+	_inamp = p[4];
+	const float inchans = p[5];
+	_full_fft = p[6];
     _half_fft = _full_fft / 2;
-	_decay_mult = p[7];
-	_inchan = p[9];
+    _overlap = p[7];
+	_decay_shift = p[9];
+	_threshold = p[10];
+	_inchan = p[12];
 
 	int winlen;
-	double *wintab = (double *) getPFieldTable(9, &winlen);
+	double *wintab = (double *) getPFieldTable(10, &winlen);
 	const float freq = 1.0/(float)_half_fft;
 	window = new Ooscili(SR, freq, wintab, winlen);
     //printf("%i %f\n", window->getlength(), freq);
@@ -63,11 +80,16 @@ int SPECFREZ::init(double p[], int n_args)
 	inframes = int(dur * SR + 0.5);
 
     int feedbackwinlen;
-    double *feedbacktab = (double *) getPFieldTable(6, &feedbackwinlen);
+    double *feedbacktab = (double *) getPFieldTable(8, &feedbackwinlen);
     const float feedbackfreq = 1;
     decaytable = new Ooscili(_half_fft, feedbackfreq, feedbacktab, feedbackwinlen);
 
-    _pan = p[10];
+    _pan = p[13];
+
+    _decimation = int(_full_fft / _overlap);
+    _window_len_minus_decimation = _full_fft - _decimation;
+    int _latency = _window_len_minus_decimation;
+    const float latency_dur = _latency / SR;
 
 	rtsetoutput(outskip, dur, this);
 	rtsetinput(inskip, this);
@@ -156,16 +178,18 @@ void SPECFREZ::Bucket_Wrapper(const float buf[], const int len, void *obj)
 void SPECFREZ::window_input(const float buf[])
 {
 	//rotate previous TheBucket samples to beginning of fft
-	for (int i = 0; i < _half_fft; i++){
-		inner_in[i] = inner_in[i + _half_fft];
+	for (int i = 0; i < _window_len_minus_decimation; i++){
+		inner_in[i] = inner_in[i + _decimation];
 	}
 
 	//fill second half of buffer with current TheBucket samps
-	for (int i = _half_fft, j = 0; i < _full_fft; i++, j++){
-		inner_in[i] = buf[j];
+	for (int i = _window_len_minus_decimation, j = 0; i < _full_fft; i++, j++){
+		inner_in[i] = buf[j] * _inamp;
 	}
 
 	//window before taking fft
+	for (int i = 0; i < _full_fft; i++)
+		fftbuf[i] = 0.0f;
 	int j = currentFrame() % _full_fft;
 	for (int i = 0; i < _full_fft; i++){
 		fftbuf[j] += _window[i] * inner_in[i];
@@ -184,7 +208,7 @@ void SPECFREZ::window_output()
 	//our internal buffer (inner_out)
 	int j = currentFrame() % _full_fft;
 	for(int i = 0; i < _full_fft; i++){
-		inner_out[i] += fftbuf[j];
+		inner_out[i] += fftbuf[j] * _window[i];
 		if(++j == _full_fft){
 			j = 0;
 		}
@@ -198,10 +222,10 @@ void SPECFREZ::window_output()
 	}
 
 	//rotate and zero out inner out buffer for overlap add
-	for(int i = 0; i < _half_fft; i++){
-		inner_out[i] = inner_out[i + _half_fft];
+	for(int i = 0; i < _window_len_minus_decimation; i++){
+		inner_out[i] = inner_out[i + _decimation];
 	}
-	for(int i = 0; i < _full_fft; i++){
+	for(int i = _window_len_minus_decimation; i < _full_fft; i++){
 		inner_out[i] = 0.0f;
 	}
 
@@ -209,7 +233,7 @@ void SPECFREZ::window_output()
 
 void SPECFREZ::mangle_samps(const float *buf, const int len)
 {
-    printf("LEN: %i, _full_fft: %i\n", len, _full_fft);
+
     // window
 
     window_input(buf);
@@ -224,10 +248,9 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 	//convert back to Cartesian
 	//set _lastfftbuf values to compare next fft to
 
-	for(int i = 2, j = 3; i < _full_fft; i += 2, j += 2){
-        _decay = decaytable->next(i/2);
-        float _decay_val = _decay * _decay_mult;
-        printf("%f decay val\n%f decay\n%f decay mult\n", _decay_val, _decay, _decay_mult);
+	for(int i = 2, j = 3, k = 0; i < _full_fft; i += 2, j += 2, k++){
+		int _decay_shift_bin = static_cast<int>(_decay_shift);
+        _decay = decaytable->next((k + _decay_shift_bin) % _full_fft);
         //printf("%i %f\n", i/2, _decay);
 		float r_sq = fftbuf[i] * fftbuf[i];
 		float i_sq = fftbuf[j] * fftbuf[j];
@@ -237,8 +260,8 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 		float last_i_sq = _lastfftbuf[j] * _lastfftbuf[j];
 		float last_fft_mag = sqrt(last_r_sq + last_i_sq);
         float last_fft_phi = atan2(_lastfftbuf[j], _lastfftbuf[i]);
-		if(fft_mag > last_fft_mag){
-			fft_mag *= _decay_val;
+		if(fft_mag > last_fft_mag && fft_mag > _threshold){
+			fft_mag *= _decay;
 			float phase = ((float)rand()/(float)RAND_MAX) * TWO_PI;
 			//float phase = fft_phi;
             fftbuf[i] = fft_mag * cos(phase);
@@ -246,8 +269,8 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 			_lastfftbuf[i] = fftbuf[i];
 			_lastfftbuf[j] = fftbuf[j];
 		}
-		else{
-			fft_mag = last_fft_mag * _decay_val;
+		else if (fft_mag < last_fft_mag && fft_mag > _threshold){
+			fft_mag = last_fft_mag * _decay;
 			float phase = ((float)rand()/(float)RAND_MAX) * TWO_PI;
 			//float phase = fft_phi;
             fftbuf[i] = fft_mag * cos(phase);
@@ -255,8 +278,20 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 			_lastfftbuf[i] = fftbuf[i];
 			_lastfftbuf[j] = fftbuf[j];
 		}
-        fftbuf[i] = fft_mag * cos(fft_phi);
-        fftbuf[j] = fft_mag * sin(fft_phi);
+		else if (fft_mag < last_fft_mag && last_fft_mag > _threshold){
+			fft_mag = last_fft_mag * _decay;
+			float phase = ((float)rand()/(float)RAND_MAX) * TWO_PI;
+			//float phase = fft_phi;
+            fftbuf[i] = fft_mag * cos(phase);
+			fftbuf[j] = fft_mag * sin(phase);
+			_lastfftbuf[i] = fftbuf[i];
+			_lastfftbuf[j] = fftbuf[j];
+		}
+		else {
+			float phase = ((float)rand()/(float)RAND_MAX) * TWO_PI;
+			fftbuf[i] = 0;
+			fftbuf[j] = fft_mag * sin(phase);
+		}
 	}
 
 	TheFFT->c2r();
@@ -267,11 +302,13 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 void SPECFREZ::doupdate()
 {
 
-	double p[11];
-	update(p, 11, 1 << 3 | 1 << 7 | 1 << 10);
+	double p[14];
+	update(p, 14, 1 << 3 | 1 << 4 | 1 << 9 | 1 << 10 | 1 << 13);
 	_amp = p[3];
-	_decay_mult = p[7];
-	_pan = p[10];
+	_inamp = p[4];
+	_decay_shift = p[9];
+	_threshold = p[10];
+	_pan = p[13];
 
 }
 
@@ -300,9 +337,12 @@ int SPECFREZ::run()
 
         TheBucket->drop(insig);
  
+        float outsig = _outbuf[out_index];
+        outsig *= _amp;
+
         float out[2];
-		out[0] = _outbuf[out_index] * _amp;
-		out[1] = _outbuf[out_index] * _amp;
+		out[0] = outsig * (1.0f - _pan);
+		out[1] = outsig * _pan;
         Sample_increment();
 		rtaddout(out);
 		increment();
