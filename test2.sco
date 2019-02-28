@@ -23,10 +23,10 @@ decay = maketable("curve", "nonorm", fft, 0,0,10, fft/8,0.999,10, fft/7,0,10, ff
 //decay = maketable("curve", "nonorm", 1000, 0,.95,2, 100,.99,2, 200,0.9,2, 400,.99,2, 1000,0.8) 
 inchan = 0
 
-decay_shift = maketable("curve", "nonorm", 1000, 0,1,2, 1000,fft*10)
+decay_shift = maketable("curve", "nonorm", 1000, 0,1,2, 1000,fft)
 //decay_shift = 0
 
-threshold = 0
+threshold = 0.9
 
 window = maketable("window", fft, 1)
 

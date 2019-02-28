@@ -26,7 +26,6 @@ p12 = pan
 #include <rt.h>
 #include <rtdefs.h>
 #include <math.h>
-#include <assert.h>
 
 float TWO_PI = M_PI * 2;
 
@@ -41,6 +40,8 @@ SPECFREZ::SPECFREZ()
 	Offt *TheFFT = NULL;
 	float *_ola = NULL;
     float *_drybuf = NULL;
+    float *_anal_window = NULL;
+    float *_synth_window = NULL;
 }
 
 SPECFREZ::~SPECFREZ()
@@ -52,6 +53,8 @@ SPECFREZ::~SPECFREZ()
 	delete TheFFT;
 	delete [] _ola;
     delete [] _drybuf;
+    delete [] _anal_window;
+    delete [] _synth_window;
 }
 
 int SPECFREZ::init(double p[], int n_args)
@@ -61,35 +64,39 @@ int SPECFREZ::init(double p[], int n_args)
 	const float outskip = p[0];
 	const float inskip = p[1];
 	const float dur = p[2];
-	_amp = p[3];
-	_inamp = p[4];
-	const float inchans = p[5];
-	_full_fft = p[6];
+	const float _ringdur = p[3];
+	_amp = p[4];
+	_inamp = p[5];
+	const float inchans = p[6];
+	_full_fft = p[7];
     _half_fft = _full_fft / 2;
-    _overlap = p[7];
-	_decay_shift = p[9];
-	_threshold = p[10];
+    _overlap = p[8];
+	_decay_shift = p[10];
+	_threshold = p[11];
 	_inchan = p[12];
 
-	int winlen;
-	double *wintab = (double *) getPFieldTable(10, &winlen);
-	const float freq = 1.0/(float)_half_fft;
-	window = new Ooscili(SR, freq, wintab, winlen);
-    //printf("%i %f\n", window->getlength(), freq);
+    _window_len = _full_fft * 2;
+    _decimation = int(_full_fft/_overlap);
+    //printf("fft %i window len %i decimation %i\n", _full_fft, _window_len, _decimation);
+    _window_len_minus_decimation = _window_len - _decimation;
+    int _latency = _window_len_minus_decimation;
+    const float latency_dur = _latency / SR;
+	if (rtsetoutput(outskip, latency_dur + dur + _ringdur, this) == -1)
+		return DONT_SCHEDULE;
+	inframes = int(dur * SR + 0.5);	// without latency_dur
+	_input_end_frame = inframes + _latency;
 
-	inframes = int(dur * SR + 0.5);
+	int winlen;
+	double *wintab = (double *) getPFieldTable(13, &winlen);
+	const float freq = 1.0/(float)_window_len;
+	window = new Ooscili(SR, freq, wintab, winlen);
 
     int feedbackwinlen;
-    double *feedbacktab = (double *) getPFieldTable(8, &feedbackwinlen);
+    double *feedbacktab = (double *) getPFieldTable(9, &feedbackwinlen);
     const float feedbackfreq = 1;
     decaytable = new Ooscili(_half_fft, feedbackfreq, feedbacktab, feedbackwinlen);
 
-    _pan = p[13];
-
-    _decimation = int(_full_fft / _overlap);
-    _window_len_minus_decimation = _full_fft - _decimation;
-    int _latency = _window_len_minus_decimation;
-    const float latency_dur = _latency / SR;
+    _pan = p[14];
 
 	rtsetoutput(outskip, dur, this);
 	rtsetinput(inskip, this);
@@ -97,14 +104,63 @@ int SPECFREZ::init(double p[], int n_args)
 	return nSamps();
 }
 
+int SPECFREZ::make_windows()
+{
+
+	// make a Hamming window
+	for (int i = 0; i < _window_len; i++)
+		_anal_window[i] = _synth_window[i] = 0.54f - 0.46f * cosf(2.0f * M_PI * i / (_window_len - 1));
+
+
+	// When _window_len > _fftlen, also apply interpolating (sinc) windows to
+	// ensure that window is 0 at increments of _fftlen away from the center
+	// of the analysis window and of decimation away from the center of the
+	// synthesis window.
+
+	if (_window_len > _full_fft) {
+		float x = -(_window_len - 1) / 2.0;
+		for (int i = 0; i < _window_len; i++, x += 1.0f)
+			if (x != 0.0f) {
+				_anal_window[i] *= _full_fft * sin(M_PI * x / _full_fft) / (M_PI * x);
+				if (_decimation)
+					_synth_window[i] *= _decimation * sin(M_PI * x / _decimation)
+					                                               / (M_PI * x);
+			}
+	}
+
+	// Normalize windows for unity gain across unmodified
+	// analysis-synthesis procedure.
+
+	float sum = 0.0f;
+	for (int i = 0; i < _window_len; i++)
+		sum += _anal_window[i];
+
+	for (int i = 0; i < _window_len; i++) {
+		float afac = 2.0f / sum;
+		float sfac = _window_len > _full_fft ? 1.0f / afac : afac;
+		_anal_window[i] *= afac;
+		_synth_window[i] *= sfac;
+	}
+
+	if (_window_len <= _full_fft && _decimation) {
+		sum = 0.0f;
+		for (int i = 0; i < _window_len; i += _decimation)
+			sum += _synth_window[i] * _synth_window[i];
+		sum = 1.0f / sum;
+		for (int i = 0; i < _window_len; i++)
+			_synth_window[i] *= sum;
+	}
+
+	return 0;
+}
+
 int SPECFREZ::configure()
 {
 
 	_in = new float [RTBUFSAMPS * inputChannels()];
-	outframes = imax(_full_fft, RTBUFSAMPS) * 2;
-
-    fft_index = outframes - _half_fft;
-    out_index = 0;
+	outframes = _decimation + 2;
+    out_read_index = outframes - _decimation;
+    out_write_index = 0;
 
     if (_in == NULL)
         return -1;
@@ -119,11 +175,11 @@ int SPECFREZ::configure()
 	if (TheFFT == NULL)
 		return -1;
 
-	TheBucket = new Obucket(_half_fft, Bucket_Wrapper, (void *) this);
+	TheBucket = new Obucket(_decimation, Bucket_Wrapper, (void *) this);
 	if (TheBucket == NULL)
 		return -1;
 
-	_ola = new float [_full_fft];
+	_ola = new float [_window_len];
     for(int i = 0; i < _full_fft; i++){
         _ola[i] = 0.0f;
     }
@@ -138,35 +194,17 @@ int SPECFREZ::configure()
 		_lastfftbuf[i] = 0.0f;
 	}
 
-	inner_out = new float [_full_fft];
-	inner_in = new float [_full_fft];
+	inner_out = new float [_window_len];
+	inner_in = new float [_window_len];
 
-	// window using hann window
-	_window = new float [_full_fft];
-    for(int i = 0; i < _full_fft; i++){
-       	_window[i] = 0.5 * (1 - (cos((TWO_PI*i)/(_full_fft-1))));
-    }
+	//make the windows
+	_anal_window = new float [_window_len];
+	_synth_window = new float [_window_len];
+
+	make_windows();
 
 	return 0;
 
-}
-
-inline void SPECFREZ::FFT_increment()
-{
-	if (++fft_index == outframes){
-		fft_index = 0;
-	}
-    //printf("fft_index:%i, out_index:%i, outframes:%i\n", fft_index, out_index, outframes);
-    assert(fft_index != out_index);
-}
-
-inline void SPECFREZ::Sample_increment()
-{
-	if (++out_index == outframes){
-		out_index = 0;
-	}
-    //printf("fft_index:%i, out_index:%i, outframes:%i\n", fft_index, out_index, outframes);
-    assert(out_index != fft_index);
 }
 
 void SPECFREZ::Bucket_Wrapper(const float buf[], const int len, void *obj)
@@ -183,7 +221,7 @@ void SPECFREZ::window_input(const float buf[])
 	}
 
 	//fill second half of buffer with current TheBucket samps
-	for (int i = _window_len_minus_decimation, j = 0; i < _full_fft; i++, j++){
+	for (int i = _window_len_minus_decimation, j = 0; i < _window_len; i++, j++){
 		inner_in[i] = buf[j] * _inamp;
 	}
 
@@ -191,8 +229,8 @@ void SPECFREZ::window_input(const float buf[])
 	for (int i = 0; i < _full_fft; i++)
 		fftbuf[i] = 0.0f;
 	int j = currentFrame() % _full_fft;
-	for (int i = 0; i < _full_fft; i++){
-		fftbuf[j] += _window[i] * inner_in[i];
+	for (int i = 0; i < _window_len; i++){
+		fftbuf[j] += _anal_window[i] * inner_in[i];
 		if (++j == _full_fft){
 			j = 0;
 		}
@@ -207,8 +245,8 @@ void SPECFREZ::window_output()
 	//iterate through and add from location on in fftbuf to
 	//our internal buffer (inner_out)
 	int j = currentFrame() % _full_fft;
-	for(int i = 0; i < _full_fft; i++){
-		inner_out[i] += fftbuf[j] * _window[i];
+	for(int i = 0; i < _window_len; i++){
+		inner_out[i] += fftbuf[j] * _synth_window[i];
 		if(++j == _full_fft){
 			j = 0;
 		}
@@ -217,15 +255,15 @@ void SPECFREZ::window_output()
 	//write to output buffer at current location in out_frames
 	//increment counter for location in out_frames
 	for(int i = 0; i < _half_fft; i++){
-		_outbuf[fft_index] = inner_out[i];
-		FFT_increment();
+		_outbuf[out_write_index] = inner_out[i];
+		increment_out_write_index();
 	}
 
 	//rotate and zero out inner out buffer for overlap add
 	for(int i = 0; i < _window_len_minus_decimation; i++){
 		inner_out[i] = inner_out[i + _decimation];
 	}
-	for(int i = _window_len_minus_decimation; i < _full_fft; i++){
+	for(int i = _window_len_minus_decimation; i < _window_len; i++){
 		inner_out[i] = 0.0f;
 	}
 
@@ -234,12 +272,15 @@ void SPECFREZ::window_output()
 void SPECFREZ::mangle_samps(const float *buf, const int len)
 {
 
-    // window
+	const bool reading_input = (currentFrame() < _input_end_frame);
+	if (reading_input){
 
-    window_input(buf);
+	    // window
+		window_input(buf);
 
-	TheFFT->r2c();
-
+		TheFFT->r2c();
+	
+	}
 	//compute the polar coordinates for each bin
 	//evaulate if the bin amplitude is greater than the previous fft
 	//if so, keep as current bin, add decay
@@ -261,7 +302,6 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 		float last_fft_mag = sqrt(last_r_sq + last_i_sq);
         float last_fft_phi = atan2(_lastfftbuf[j], _lastfftbuf[i]);
 		if(fft_mag > last_fft_mag && fft_mag > _threshold){
-			fft_mag *= _decay;
 			float phase = ((float)rand()/(float)RAND_MAX) * TWO_PI;
 			//float phase = fft_phi;
             fftbuf[i] = fft_mag * cos(phase);
@@ -270,7 +310,7 @@ void SPECFREZ::mangle_samps(const float *buf, const int len)
 			_lastfftbuf[j] = fftbuf[j];
 		}
 		else if (fft_mag < last_fft_mag && fft_mag > _threshold){
-			fft_mag = last_fft_mag * _decay;
+			fft_mag = last_fft_mag;
 			float phase = ((float)rand()/(float)RAND_MAX) * TWO_PI;
 			//float phase = fft_phi;
             fftbuf[i] = fft_mag * cos(phase);
@@ -322,7 +362,9 @@ int SPECFREZ::run()
 
     const int insamps = nframes * inchans;
 
-    rtgetin(_in, this, insamps);
+	const bool input_avail = (currentFrame() < inframes);
+	if (input_avail)
+		rtgetin(_in, this, insamps);
 
 	for(int i = 0; i < nframes; i++)
 	{
@@ -337,13 +379,14 @@ int SPECFREZ::run()
 
         TheBucket->drop(insig);
  
-        float outsig = _outbuf[out_index];
+        float outsig = _outbuf[out_read_index];
+        increment_out_read_index();
         outsig *= _amp;
 
         float out[2];
 		out[0] = outsig * (1.0f - _pan);
 		out[1] = outsig * _pan;
-        Sample_increment();
+        
 		rtaddout(out);
 		increment();
 	}
